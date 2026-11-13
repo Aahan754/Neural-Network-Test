@@ -1,0 +1,186 @@
+import numpy as np
+from sklearn.datasets import fetch_openml
+from sklearn.model_selection import train_test_split
+
+# =====================================================================
+# 1. ACTIVATION FUNCTIONS
+# =====================================================================
+
+def relu(Z):
+    """
+    Rectified Linear Unit (ReLU) Activation.
+    Turns all negative raw neuron scores to 0, leaving positive scores unchanged.
+    This introduces non-linearity, allowing the network to learn complex shapes.
+    """
+    return np.maximum(0, Z)
+
+def relu_derivative(Z):
+    """
+    Derivative of ReLU.
+    Returns 1.0 for positions where the forward score was positive, and 0.0 otherwise.
+    During backpropagation, this acts as a switch: it lets gradients pass through 
+    neurons that fired, but blocks gradients from neurons that remained inactive.
+    """
+    return (Z > 0).astype(float)
+
+def softmax(Z):
+    """
+    Softmax Activation.
+    Takes a row of raw scores and converts them into a probability distribution.
+    All 10 outputs will become decimal fractions between 0 and 1, summing up to 1.0.
+    """
+    # Subtracting the maximum value stabilizes the math and prevents numerical overflow
+    exp_Z = np.exp(Z - np.max(Z, axis=1, keepdims=True))
+    # Divide each exponential by the sum of exponentials in its row
+    return exp_Z / np.sum(exp_Z, axis=1, keepdims=True)
+
+
+# =====================================================================
+# 2. DATA UTILITIES
+# =====================================================================
+
+def one_hot_encode(y, num_classes=10):
+    """
+    Converts integer labels (like 3) into binary vector arrays (like [0,0,0,1,0,0,0,0,0,0]).
+    This structure is required so we can subtract our target matrix directly from 
+    our network's 10-neuron probability output matrix during backpropagation.
+    """
+    m = y.shape[0]  # Number of samples
+    one_hot = np.zeros((m, num_classes))  # Create a matrix filled with zeros
+    one_hot[np.arange(m), y] = 1  # Place a 1 at the column index matching the true digit
+    return one_hot
+
+
+# =====================================================================
+# 3. NEURAL NETWORK CLASS
+# =====================================================================
+
+class DigitClassifier:
+    def __init__(self, input_size=784, hidden_size=64, output_size=10, learning_rate=0.1):
+        """
+        Constructor method. Initializes the structural framework of the network,
+        setting the learning rate and creating random weight matrices and zero-filled biases.
+        """
+        self.lr = learning_rate
+        
+        # W1: Weights connecting 784 inputs to 64 hidden neurons.
+        # Scaled with He Initialization (sqrt(2/inputs)) to prevent gradients from dying out.
+        self.W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2.0 / input_size)
+        # b1: 1 bias row vector for each of the 64 hidden neurons.
+        self.b1 = np.zeros((1, hidden_size))
+        
+        # W2: Weights connecting 64 hidden neurons to 10 output classes.
+        # Scaled with Xavier Initialization (sqrt(1/inputs)) suited for Softmax targets.
+        self.W2 = np.random.randn(hidden_size, output_size) * np.sqrt(1.0 / hidden_size)
+        # b2: 1 bias row vector for each of the 10 final output neurons.
+        self.b2 = np.zeros((1, output_size))
+
+    def forward(self, X):
+        """
+        Forward Propagation Method.
+        Feeds input pixel values through the layers to generate final digit probabilities.
+        """
+        # Step 1: Calculate raw combinations for the hidden layer (Inputs * Weights + Bias)
+        self.Z1 = np.dot(X, self.W1) + self.b1
+        # Step 2: Apply non-linear ReLU activation to the hidden scores
+        self.A1 = relu(self.Z1)
+        
+        # Step 3: Calculate raw scores for the final output layer (Hidden * Weights + Bias)
+        self.Z2 = np.dot(self.A1, self.W2) + self.b2
+        # Step 4: Apply Softmax to translate raw output scores into a 10-digit probability array
+        self.A2 = softmax(self.Z2)
+        return self.A2
+
+    def backward(self, X, y_one_hot, y_hat):
+        """
+        Backward Propagation Method.
+        Calculates errors using calculus chain rules and applies Gradient Descent updates.
+        """
+        m = X.shape[0]  # Total count of training images in the batch
+        
+        # --- Output Layer Calculations ---
+        # dZ2: The simplified error derivative at the output layer (Predictions minus Targets)
+        dZ2 = y_hat - y_one_hot
+        # dW2: Average contribution of hidden activations to the output error
+        dW2 = np.dot(self.A1.T, dZ2) / m
+        # db2: Average error bias shift, summing vertically across all training examples
+        db2 = np.sum(dZ2, axis=0, keepdims=True) / m
+        
+        # --- Hidden Layer Calculations ---
+        # dA1: Error attributed back onto the hidden layer activations
+        dA1 = np.dot(dZ2, self.W2.T)
+        # dZ1: Hidden layer score error, multiplying by ReLU derivative to mask out un-fired neurons
+        dZ1 = dA1 * relu_derivative(self.Z1)
+        # dW1: Average contribution of raw pixel inputs to the hidden layer error
+        dW1 = np.dot(X.T, dZ1) / m
+        # db1: Average error bias shift for the hidden layer neurons
+        db1 = np.sum(dZ1, axis=0, keepdims=True) / m
+        
+        # --- Parameter Optimization ---
+        # Modify weights and biases by subtracting a small portion (learning rate) of the errors
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
+
+    def train(self, X, y, epochs=500):
+        """
+        Training Management Method.
+        Coordinates the execution loops across epochs and reports model tracking metrics.
+        """
+        # Convert raw numerical target classes (0-9) into one-hot arrays before entering loops
+        y_one_hot = one_hot_encode(y, num_classes=10)
+        
+        for epoch in range(epochs):
+            # 1. Run data through network to get current predictions
+            y_hat = self.forward(X)
+            # 2. Backpropagate error and optimize internal parameters
+            self.backward(X, y_one_hot, y_hat)
+            
+            # Metric Reporting Timer: Triggers only every 50 iterations
+            if epoch % 50 == 0:
+                # Calculate Categorical Cross-Entropy Loss formula
+                loss = -np.sum(y_one_hot * np.log(y_hat + 1e-15)) / X.shape[0]
+                
+                # Convert the 10 probabilities back into single integers by picking the largest index
+                predictions = np.argmax(y_hat, axis=1)
+                # Compute accuracy percentage by taking the mean average of matching indices
+                accuracy = np.mean(predictions == y) * 100
+                
+                print(f"Epoch {epoch:3d} | Loss: {loss:.4f} | Accuracy: {accuracy:.2f}%")
+
+
+# =====================================================================
+# 4. EXECUTION PROGRAM ENVIRONMENT
+# =====================================================================
+
+
+if __name__ == "__main__":
+    print("Downloading real handwritten digits (MNIST)... This may take a minute...")
+    # Fetch the actual dataset of 70,000 real handwritten images
+    mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='liac-arff')
+    
+    # Scale pixel values from (0 to 255) down to (0.0 to 1.0) so the math stays stable
+    X = mnist.data / 255.0
+    y = mnist.target.astype(int)  # Convert text labels "3" into integers 3
+
+    # Split into 60,000 images for training and 10,000 images for testing
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=10000, random_state=42)
+
+    # Initialize our NumPy network
+    nn = DigitClassifier(input_size=784, hidden_size=64, output_size=10, learning_rate=0.2)
+    
+    print("\nTraining on REAL human handwriting images...")
+    # Train the network using 200 epochs on the real data
+    nn.train(X_train, y_train, epochs=200)
+    
+    # Verify it on an image it has NEVER seen before (the test set)
+    print("\nEvaluating a brand new test image...")
+    test_idx = 0
+    test_image = X_test[test_idx : test_idx + 1]
+    
+    probabilities = nn.forward(test_image)
+    predicted_digit = np.argmax(probabilities)
+    
+    print(f"Actual Written Number: {y_test[test_idx]}")
+    print(f"Network Predicted Number: {predicted_digit}")
